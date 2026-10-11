@@ -8,7 +8,6 @@ import pytest
 from autopost.config import Config
 from autopost.store import JsonStore, PgStore, make_store
 
-DEFAULT_URL = "postgresql://autopost:autopost_local@127.0.0.1:5433/autopost"
 
 
 def test_json_results_round_trip_and_merge(tmp_path):
@@ -85,7 +84,9 @@ class TestPgStore:
     @pytest.fixture
     def store(self):
         psycopg = pytest.importorskip("psycopg")
-        url = os.environ.get("DATABASE_URL") or DEFAULT_URL
+        url = Config().get("DATABASE_URL")
+        if not url:
+            pytest.skip("DATABASE_URL not set")
         try:
             psycopg.connect(url, connect_timeout=3).close()
         except Exception:

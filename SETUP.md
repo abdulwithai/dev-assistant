@@ -251,13 +251,13 @@ One-time creation (already done on this machine; skip if `docker ps -a` shows `a
 
 ```bash
 docker run -d --name autopost-db --restart unless-stopped \
-  -e POSTGRES_USER=autopost -e POSTGRES_PASSWORD=autopost_local -e POSTGRES_DB=autopost \
+  -e POSTGRES_USER=autopost -e POSTGRES_PASSWORD=<your-db-password> -e POSTGRES_DB=autopost \
   -p 127.0.0.1:5433:5432 -v autopost-pgdata:/var/lib/postgresql/data postgres:16
 .venv/bin/pip install -r requirements.txt
 ```
 
 - Host port is **5433**, because a local Postgres already uses 5432 on this Mac.
-- `.env` needs `DATABASE_URL=postgresql://autopost:autopost_local@127.0.0.1:5433/autopost` (already in `.env.example`).
+- `.env` needs `DATABASE_URL=postgresql://autopost:<your-db-password>@127.0.0.1:5433/autopost` (use the same password you gave the container; `.env.example` has the template).
 - Tables (`post_results`, `imported`, `analytics_cache`, `analytics_snapshots`) are created automatically on first use (`autopost/store.py`).
 - Data lives in the Docker volume `autopost-pgdata`, so it survives `docker rm`. Don't run `docker volume rm autopost-pgdata` unless you want to wipe it.
 - Inspect: `docker exec -it autopost-db psql -U autopost -c "SELECT platform, fetched_at, followers FROM analytics_snapshots ORDER BY fetched_at DESC LIMIT 10;"`
