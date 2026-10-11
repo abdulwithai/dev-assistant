@@ -9,7 +9,13 @@ One command publishes a finished vertical video to:
 - **LinkedIn** on your personal profile
 - **TikTok** sent to your TikTok drafts. You add the caption and tap Post. The caption is copied to your clipboard.
 
-**Facebook:** the devlobb account is a personal profile, which the API cannot post to. Reels reach Facebook through Instagram instead. Turn on Instagram → Accounts Center → Sharing across profiles → auto-share Reels to Facebook.
+**Facebook:** the devlobb account is a personal profile, which Facebook's API cannot post to, and Instagram's auto-share does not apply to reels posted through the API. Use the `/post-facebook` command in Claude Code instead:
+
+```
+/post-facebook 2026-10-12-ai-news
+```
+
+It opens facebook.com/reels/create in your Chrome (through Claude in Chrome), uploads the video, types the caption, and stops for your OK before it clicks Post. It needs Chrome open and logged in to Facebook. Facebook's terms forbid automated use of the site, so you approve every post. If you would rather not use it, share the reel manually from the Instagram app (about 15 seconds).
 
 It runs locally on your Mac and is free.
 
@@ -114,3 +120,4 @@ Results are stored in Postgres when `DATABASE_URL` is set (see SETUP.md, "Local 
 - `site/`: Terms & Privacy pages on GitHub Pages
 - `SETUP.md`: developer app setup
 - `assets/app-icon-1024.png`: app icon
+- `.claude/skills/post-facebook/`: the `/post-facebook` Claude Code command
