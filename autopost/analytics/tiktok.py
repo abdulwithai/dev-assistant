@@ -82,7 +82,7 @@ def fetch(config: Config, store: TokenStore, since: date) -> dict:
     if not tokens or not tokens.get("access_token"):
         return _result("unavailable", "Not logged in to TikTok; run `python -m autopost login tiktok`")
     scopes = _scopes(tokens)
-    if scopes and SCOPE not in scopes:
+    if SCOPE not in scopes:
         return _result("unavailable", NEED_SCOPE_REASON)
     try:
         token = TikTok(config, store, requests.Session())._access_token()

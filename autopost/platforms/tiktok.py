@@ -24,7 +24,7 @@ TOKEN_URL = "https://open.tiktokapis.com/v2/oauth/token/"
 USER_INFO_URL = "https://open.tiktokapis.com/v2/user/info/"
 INIT_URL = "https://open.tiktokapis.com/v2/post/publish/inbox/video/init/"
 STATUS_URL = "https://open.tiktokapis.com/v2/post/publish/status/fetch/"
-SCOPES = "user.info.basic,video.upload"
+SCOPES = "user.info.basic,user.info.stats,video.upload,video.list"
 
 REFRESH_MARGIN = 300  # refresh the access token when it expires within this many seconds
 LOGIN_HINT = "run `python -m autopost login tiktok`"

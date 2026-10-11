@@ -2,7 +2,7 @@
 
 Sources (all via `requests`, no Google client libraries):
   * YouTube Data API v3  (scope youtube.readonly): channel statistics (subscriberCount), the
-    uploads playlist, and videos?part=snippet,statistics,contentDetails for lifetime stats.
+    uploads playlist, and videos?part=snippet,statistics,contentDetails,status for lifetime stats.
     https://developers.google.com/youtube/v3/docs/channels, /playlistItems, /videos
   * YouTube Analytics API v2 (scope yt-analytics.readonly): daily views, per-video views/likes/
     comments/shares within the range, and audience (country views share, age/gender viewerPercentage).
@@ -62,7 +62,7 @@ def _now() -> datetime:  # separate so tests can patch
 def _result(**over) -> dict:
     base = {"platform": "youtube", "status": "unavailable", "reason": None,
             "fetched_at": _now().isoformat(timespec="seconds"),
-            "posts": [], "daily": [], "audience": None, "followers": None}
+            "posts": [], "daily": [], "audience": None, "followers": None, "scheduled": []}
     base.update(over)
     return base
 
@@ -128,8 +128,16 @@ def _scope_missing(tokens: dict, needed) -> bool:
 
 
 # ---- Data API ----
+def _is_future(value, now: datetime) -> bool:
+    try:
+        when = datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
+    except (AttributeError, ValueError):
+        return False
+    return when.tzinfo is not None and when > now
+
+
 def _fetch_posts(http, token: str):
-    """Returns (posts, followers)."""
+    """Returns (posts, followers, scheduled); videos with a future status.publishAt are scheduled, not posts."""
     ch = _get(http, f"{DATA_API}/channels", token,
               {"part": "contentDetails,statistics", "mine": "true"})
     items = ch.get("items") or []
@@ -140,7 +148,7 @@ def _fetch_posts(http, token: str):
     followers = None if stats.get("hiddenSubscriberCount") else _int(stats.get("subscriberCount"))
     uploads = ((channel.get("contentDetails") or {}).get("relatedPlaylists") or {}).get("uploads")
     if not uploads:
-        return [], followers
+        return [], followers, []
 
     ids: List[str] = []
     page_token = None
@@ -158,18 +166,28 @@ def _fetch_posts(http, token: str):
             break
 
     posts = []
+    scheduled = []
+    now = _now()
     for i in range(0, len(ids), 50):
         data = _get(http, f"{DATA_API}/videos", token,
-                    {"part": "snippet,statistics,contentDetails", "id": ",".join(ids[i:i + 50]),
+                    {"part": "snippet,statistics,contentDetails,status", "id": ",".join(ids[i:i + 50]),
                      "maxResults": 50})
         for v in data.get("items") or []:
             snip = v.get("snippet") or {}
             st = v.get("statistics") or {}
             secs = parse_duration((v.get("contentDetails") or {}).get("duration"))
+            kind = "Short" if secs is not None and secs <= SHORT_MAX_SECONDS else "Video"
+            publish_at = (v.get("status") or {}).get("publishAt")
+            if _is_future(publish_at, now):
+                scheduled.append({"id": v["id"], "title": snip.get("title") or "", "type": kind,
+                                  "scheduled_at": publish_at,
+                                  "url": f"https://www.youtube.com/watch?v={v['id']}",
+                                  "thumbnail": _thumbnail(snip)})
+                continue
             posts.append({
                 "id": v["id"],
                 "title": snip.get("title") or "",
-                "type": "Short" if secs is not None and secs <= SHORT_MAX_SECONDS else "Video",
+                "type": kind,
                 "published_at": snip.get("publishedAt"),
                 "url": f"https://www.youtube.com/watch?v={v['id']}",
                 "thumbnail": _thumbnail(snip),
@@ -178,7 +196,7 @@ def _fetch_posts(http, token: str):
                 "comments": _int(st.get("commentCount")),
                 "shares": None,  # not in the Data API
             })
-    return posts, followers
+    return posts, followers, scheduled
 
 
 # ---- Analytics API ----
@@ -253,7 +271,7 @@ def fetch(config, store, since: date, session: Optional[requests.Session] = None
     if data_ok:
         out = run(lambda: _fetch_posts(http, token), "videos")
         if out is not None:
-            res["posts"], res["followers"] = out
+            res["posts"], res["followers"], res["scheduled"] = out
             got_data = True
     if analytics_ok:
         daily = run(lambda: _fetch_daily(http, token, since, end), "analytics")

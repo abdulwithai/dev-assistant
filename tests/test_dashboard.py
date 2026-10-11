@@ -43,7 +43,7 @@ def test_empty_state_has_nulls_not_zeros(tmp_path):
     d = build_dashboard(cfg, 30)
     assert d["kpis"]["total_views"] == {"value": None, "prev": None, "delta_pct": None}
     assert d["analytics_synced_at"] is None and d["audience"] is None and d["top_content"] == []
-    assert [p["platform"] for p in d["platforms"]] == ["instagram", "youtube", "tiktok", "linkedin"]
+    assert [p["platform"] for p in d["platforms"]] == ["instagram", "youtube", "tiktok", "linkedin", "facebook"]
     assert all(p["views"] is None and p["delta_pct"] is None for p in d["platforms"])
     assert d["kpis"]["total_posts"]["value"] == len(d["rows"]) == 2
     assert d["kpis"]["scheduled"]["value"] == 2
@@ -57,7 +57,7 @@ def test_corrupt_analytics_tolerated(tmp_path):
     (tmp_path / "posts").mkdir()
     for bad in ("{nope", "[]", json.dumps({"platforms": {"youtube": "x"}, "synced_at": 5})):
         (tmp_path / "posts" / "analytics.json").write_text(bad)
-        assert load_cache(cfg) == {"synced_at": None, "platforms": {}}
+        assert load_cache(cfg) == {"synced_at": None, "platforms": {}, "manual_scheduled": {}}
         assert build_dashboard(cfg, 30)["rows"] == []
 
 
@@ -165,7 +165,8 @@ def test_sync_all_wraps_failures_and_caches(tmp_path, monkeypatch):
         "linkedin": lambda c, s, since: _result("linkedin", "unavailable", reason="no scope")})
     monkeypatch.setattr("autopost.sync.sync_instagram", lambda c, s: calls.append(1))
     out = sync_all(cfg, object())
-    assert out == {"instagram": "ok", "youtube": "error", "tiktok": "unavailable", "linkedin": "unavailable"}
+    assert out == {"instagram": "ok", "youtube": "error", "tiktok": "unavailable", "linkedin": "unavailable",
+                   "facebook": "unavailable"}
     assert calls == [1]
     cache = load_cache(cfg)
     assert cache["synced_at"] and "secret-token" not in json.dumps(cache)
@@ -251,3 +252,79 @@ def test_failed_sync_keeps_last_good_data(tmp_path, monkeypatch):
     assert sync_all(cfg, object())["instagram"] == "ok"
     ig = load_cache(cfg)["platforms"]["instagram"]
     assert ig["posts"] and "Last sync failed" in ig["reason"]
+
+
+def test_norm_url_keeps_youtube_video_id():
+    from autopost.analytics import _norm_url
+    a = _norm_url("https://www.youtube.com/watch?v=AAAAAAAAAAA&feature=x")
+    b = _norm_url("https://www.youtube.com/watch?v=BBBBBBBBBBB")
+    assert a != b
+    assert _norm_url("https://instagram.com/reel/X/?igsh=1#t") == "https://instagram.com/reel/x"
+
+
+def _future(days=3):
+    return (datetime.now(timezone.utc) + timedelta(days=days)).isoformat(timespec="seconds")
+
+
+def test_manual_scheduled_rows_count_and_past_hidden(tmp_path):
+    cfg = Config(env={}, root=tmp_path)
+    _write_cache(cfg, [_result("youtube")])
+    assert analytics.set_manual_scheduled(cfg, "tiktok", [
+        {"title": "Soon", "scheduled_at": _future(), "url": "https://tiktok.com/x"},
+        {"title": "Gone", "scheduled_at": _iso(2)},
+        {"title": "", "scheduled_at": _future()}, {"title": "NoTime"}, "junk"]) == 2
+    d = build_dashboard(cfg, 30)
+    rows = [r for r in d["rows"] if r["status"] == "scheduled"]
+    assert [(r["platform"], r["title"], r["url"]) for r in rows] == [("tiktok", "Soon", "https://tiktok.com/x")]
+    assert rows[0]["id"] == "sched:tiktok:0" and set(rows[0]) == set(analytics._row())
+    assert d["kpis"]["scheduled"]["value"] == d["tab_counts"]["scheduled"] == 1
+    assert d["tab_counts"]["all"] == 1
+
+
+def test_fetcher_scheduled_rows_and_dedupe(tmp_path):
+    cfg = Config(env={}, root=tmp_path)
+    yt = _result("youtube")
+    yt["scheduled"] = [{"id": "v9", "title": "Big launch", "type": "Short", "scheduled_at": _future(),
+                        "url": "https://www.youtube.com/watch?v=v9", "thumbnail": "https://i/x.jpg"}]
+    _write_cache(cfg, [yt])
+    analytics.set_manual_scheduled(cfg, "youtube", [{"title": " big LAUNCH ", "scheduled_at": _future()}])
+    analytics.set_manual_scheduled(cfg, "facebook", [{"title": "big launch", "scheduled_at": _future()}])
+    _post(cfg.inbox_dir / "a", {"title": "Local", "platforms": ["tiktok"], "scheduled_at": _future(2)})
+    analytics.set_manual_scheduled(cfg, "tiktok", [{"title": "Local", "scheduled_at": _future(2)}])
+    d = build_dashboard(cfg, 30)
+    got = sorted((r["platform"], r["id"]) for r in d["rows"] if r["status"] == "scheduled")
+    assert got == [("facebook", "sched:facebook:0"), ("tiktok", "a:tiktok"), ("youtube", "sched:youtube:v9")]
+    assert d["kpis"]["scheduled"]["value"] == 3
+
+
+def test_manual_scheduled_validation_and_clear(tmp_path):
+    cfg = Config(env={}, root=tmp_path)
+    with pytest.raises(ValueError):
+        analytics.set_manual_scheduled(cfg, "myspace", [])
+    assert analytics.set_manual_scheduled(cfg, "tiktok", [{"title": "A", "scheduled_at": _future()}]) == 1
+    assert len(load_cache(cfg)["manual_scheduled"]["tiktok"]) == 1
+    assert analytics.set_manual_scheduled(cfg, "tiktok", []) == 0
+    assert load_cache(cfg)["manual_scheduled"] == {}
+
+
+def test_sync_all_preserves_manual_scheduled(tmp_path, monkeypatch):
+    cfg = Config(env={}, root=tmp_path)
+    analytics.set_manual_scheduled(cfg, "tiktok", [{"title": "Keep me", "scheduled_at": _future()}])
+    monkeypatch.setattr(analytics, "_run_fetcher", lambda name, c, s, since: analytics._blank(name, "unavailable", "x"))
+    sync_all(cfg, None)
+    assert load_cache(cfg)["manual_scheduled"]["tiktok"][0]["title"] == "Keep me"
+
+
+def test_schedule_import_cli_round_trip(tmp_path, monkeypatch, capsys):
+    import io
+    from argparse import Namespace
+    from autopost import cli
+    cfg = Config(env={}, root=tmp_path)
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps([{"title": "A", "scheduled_at": _future()}])))
+    assert cli.cmd_schedule_import(Namespace(platform="tiktok", clear=False), cfg, None) == 0
+    assert "tiktok     stored 1 scheduled posts" in capsys.readouterr().out
+    assert [r["title"] for r in build_dashboard(cfg, 30)["rows"]] == ["A"]
+    monkeypatch.setattr("sys.stdin", io.StringIO("{nope"))
+    assert cli.cmd_schedule_import(Namespace(platform="tiktok", clear=False), cfg, None) == 1
+    assert cli.cmd_schedule_import(Namespace(platform="tiktok", clear=True), cfg, None) == 0
+    assert build_dashboard(cfg, 30)["rows"] == []

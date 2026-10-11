@@ -5,6 +5,9 @@
   post <folder> [--only ...]  publish one post folder
   run-inbox                   publish every folder in posts/inbox, move finished ones to posts/done
   sync instagram [--limit N]  fetch your existing Instagram posts for the dashboard (read-only)
+  linkedin-import FILE        store per-post numbers from LinkedIn's analytics export (.xlsx/.csv) for the dashboard
+  facebook-import             store Facebook reel view counts (JSON list on stdin) for the dashboard; used by /sync-facebook
+  schedule-import <platform>  store posts scheduled inside a platform's own app (JSON list on stdin) so they show as scheduled; --clear removes them
   add <folder> [<folder> ...] register posts (or push post.json edits) into the Postgres database (needs DATABASE_URL)
   migrate-to-db               copy post.json / result.json / imported.json / analytics.json into the Postgres database (needs DATABASE_URL)
   ui [--port N] [--reload]    local dashboard of queued and published posts (http://127.0.0.1:8766); --reload restarts on code changes
@@ -14,9 +17,11 @@ import argparse
 import shutil
 import sys
 import traceback
+import zipfile
 from pathlib import Path
 from typing import List, Optional
 
+from autopost.analytics import PLATFORMS
 from autopost.config import Config, ConfigError, TokenStore
 from autopost.oauth import AuthError
 from autopost.platforms import REGISTRY, get_platform_class
@@ -143,6 +148,47 @@ def cmd_sync(args, config: Config, store: TokenStore) -> int:
     return 0
 
 
+def cmd_facebook_import(args, config: Config, store: TokenStore) -> int:
+    import json
+    from autopost.analytics.facebook import import_snapshot
+    try:
+        posts = json.load(sys.stdin)
+        if not isinstance(posts, list):
+            raise ValueError("expected a JSON list of reels")
+    except ValueError as e:
+        print(f"FAIL {e}")
+        return 1
+    print(f"facebook   stored {import_snapshot(config, posts)} reels")
+    return 0
+
+
+def cmd_schedule_import(args, config: Config, store: TokenStore) -> int:
+    import json
+    from autopost.analytics import set_manual_scheduled
+    items: list = []
+    if not args.clear:
+        try:
+            items = json.load(sys.stdin)
+            if not isinstance(items, list):
+                raise ValueError("expected a JSON list of {title, scheduled_at, url?}")
+        except ValueError as e:
+            print(f"FAIL {e}")
+            return 1
+    print(f"{args.platform:<10} stored {set_manual_scheduled(config, args.platform, items)} scheduled posts")
+    return 0
+
+
+def cmd_linkedin_import(args, config: Config, store: TokenStore) -> int:
+    from autopost.analytics.linkedin import import_export
+    try:
+        count = import_export(config, Path(args.file).expanduser())
+    except (OSError, ValueError, KeyError, zipfile.BadZipFile) as e:
+        print(f"FAIL could not read {args.file}: {e.__class__.__name__}")
+        return 1
+    print(f"linkedin   stored {count} posts")
+    return 0 if count else 1
+
+
 def cmd_migrate_to_db(args, config: Config, store: TokenStore) -> int:
     if not config.get("DATABASE_URL"):
         print("FAIL DATABASE_URL is not set")
@@ -234,6 +280,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--limit", type=int, default=100)
     p = sub.add_parser("add")
     p.add_argument("folders", nargs="+", metavar="folder")
+    sub.add_parser("facebook-import")
+    p = sub.add_parser("schedule-import")
+    p.add_argument("platform", choices=PLATFORMS)
+    p.add_argument("--clear", action="store_true", help="remove the stored scheduled posts of this platform")
+    p = sub.add_parser("linkedin-import")
+    p.add_argument("file", help="LinkedIn analytics export (.xlsx or .csv)")
     sub.add_parser("migrate-to-db")
     p = sub.add_parser("ui")
     p.add_argument("--port", type=int, default=8766)
@@ -242,7 +294,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     config = Config()
     store = TokenStore(config.tokens_dir)
-    handler = {"login": cmd_login, "status": cmd_status, "post": cmd_post, "run-inbox": cmd_run_inbox, "sync": cmd_sync, "add": cmd_add,
+    handler = {"login": cmd_login, "status": cmd_status, "post": cmd_post, "run-inbox": cmd_run_inbox, "sync": cmd_sync, "add": cmd_add, "facebook-import": cmd_facebook_import, "schedule-import": cmd_schedule_import, "linkedin-import": cmd_linkedin_import,
                "migrate-to-db": cmd_migrate_to_db, "ui": cmd_ui}[args.command]
     return handler(args, config, store)
 

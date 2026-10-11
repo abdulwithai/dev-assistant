@@ -176,3 +176,18 @@ def test_source_stamp_changes_when_a_file_is_touched(tmp_path, monkeypatch):
         assert ui._source_stamp()[0] >= before[0] + 10
     finally:
         os.utime(target, (before[0], before[0]))
+
+
+def test_cache_is_stale(tmp_path):
+    from datetime import datetime, timedelta, timezone
+    from unittest.mock import patch
+    from autopost import ui
+    cfg = object()
+    fresh = {"synced_at": (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()}
+    old = {"synced_at": (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()}
+    with patch.object(ui, "load_cache", return_value=fresh):
+        assert ui._cache_is_stale(cfg) is False
+    with patch.object(ui, "load_cache", return_value=old):
+        assert ui._cache_is_stale(cfg) is True
+    with patch.object(ui, "load_cache", return_value={"synced_at": None}):
+        assert ui._cache_is_stale(cfg) is True

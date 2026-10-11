@@ -94,7 +94,7 @@ def make_post(tmp_path, size=10, suffix=".mp4", meta=None):
 
 def token_resp(**over):
     body = {"access_token": "AT2", "expires_in": 86400, "refresh_token": "RT2", "refresh_expires_in": 31536000,
-            "open_id": "oid", "scope": "user.info.basic,video.upload", "token_type": "Bearer"}
+            "open_id": "oid", "scope": tt.SCOPES, "token_type": "Bearer"}
     body.update(over)
     return Resp(body)
 
@@ -105,7 +105,7 @@ def test_login_builds_authorize_url_and_saves_tokens(cfg, store, monkeypatch):
 
     def fake_wait(auth_url, port, path, state):
         seen.update(url=auth_url, port=port, path=path, state=state)
-        return {"code": "CODE", "state": state, "scopes": "user.info.basic,video.upload"}
+        return {"code": "CODE", "state": state, "scopes": tt.SCOPES}
 
     monkeypatch.setattr(tt, "wait_for_redirect", fake_wait)
     sess = FakeSession(post=[token_resp()])
@@ -115,7 +115,7 @@ def test_login_builds_authorize_url_and_saves_tokens(cfg, store, monkeypatch):
     q = {k: v[0] for k, v in parse_qs(u.query).items()}
     assert f"{u.scheme}://{u.netloc}{u.path}" == "https://www.tiktok.com/v2/auth/authorize/"
     assert q["client_key"] == "ck" and q["response_type"] == "code"
-    assert q["scope"] == "user.info.basic,video.upload"
+    assert q["scope"] == tt.SCOPES
     assert q["redirect_uri"] == REDIRECT  # exact registered URI, trailing slash kept
     assert q["state"] == seen["state"]
     assert q["code_challenge_method"] == "S256"
@@ -132,7 +132,7 @@ def test_login_builds_authorize_url_and_saves_tokens(cfg, store, monkeypatch):
 
     saved = store.load("tiktok")
     assert saved["access_token"] == "AT2" and saved["refresh_token"] == "RT2" and saved["open_id"] == "oid"
-    assert saved["scope"] == "user.info.basic,video.upload"
+    assert saved["scope"] == tt.SCOPES
     assert saved["expires_at"] > time.time() + 80000
     assert saved["refresh_expires_at"] > time.time() + 31000000
 

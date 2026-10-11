@@ -19,7 +19,9 @@ def test_page_has_no_unsafe_html_sinks():
     assert "innerHTML" not in PAGE and "outerHTML" not in PAGE and "insertAdjacentHTML" not in PAGE
     assert "document.write" not in PAGE and "eval(" not in PAGE
     assert not re.search(r"(src|href)=\"https?://", PAGE)  # no external assets
-    assert "@import" not in PAGE and "<link" not in PAGE
+    assert "@import" not in PAGE
+    # the only <link> allowed is the inline data: favicon
+    assert all(l.startswith('<link rel="icon" href="data:') for l in re.findall(r"<link[^>]*>", PAGE))
 
 
 def test_fixture_is_consistent():

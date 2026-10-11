@@ -46,7 +46,7 @@ It runs locally on your Mac and is free.
    - YouTube shows an "unverified app" warning. Click Advanced → Go to ..., then pick your channel.
    - Instagram login only imports `INSTAGRAM_USER_TOKEN` from `.env`. No browser is needed.
    - LinkedIn tokens last 60 days. After that, log in again.
-   - TikTok uses the sandbox app (your account only) until TikTok approves the app.
+   - TikTok uses the sandbox app (your account only) until TikTok approves the app. Analytics needs the `video.list` and `user.info.stats` scopes. Enable them in the TikTok developer portal, then run `login tiktok` again.
 
 4. **Check everything.**
    ```bash
@@ -107,6 +107,16 @@ Results are stored in Postgres when `DATABASE_URL` is set (see SETUP.md, "Local 
 - TikTok inbox uploads allow at most 5 pending drafts per 24 hours.
 - Uploads from an unverified Google project may be set to private by YouTube. The tool reports it if that happens.
 
+## Scheduled posts on the dashboard
+
+Posts you schedule inside a platform's own app show up under the dashboard's Scheduled tab. YouTube-scheduled videos appear automatically after a sync. For the other platforms, import them with `python -m autopost schedule-import <platform>` (JSON list on stdin; `--clear` removes them):
+
+```bash
+echo '[{"title": "AI news", "scheduled_at": "2026-10-12T18:00:00+02:00", "url": "https://..."}]' | python -m autopost schedule-import tiktok
+```
+
+Past times are hidden, and a post already listed from an inbox folder is not shown twice.
+
 ## Run the tests
 
 ```bash
@@ -121,3 +131,4 @@ Results are stored in Postgres when `DATABASE_URL` is set (see SETUP.md, "Local 
 - `SETUP.md`: developer app setup
 - `assets/app-icon-1024.png`: app icon
 - `.claude/skills/post-facebook/`: the `/post-facebook` Claude Code command
+- `.claude/skills/sync-facebook/`: the `/sync-facebook` command, which reads reel view counts from facebook.com in your Chrome and stores them (`python -m autopost facebook-import`) so Facebook shows on the dashboard; Facebook has no analytics API for personal profiles, so these are snapshots

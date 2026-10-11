@@ -5,6 +5,7 @@ import secrets
 import subprocess
 import sys
 import threading
+import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Dict
@@ -13,6 +14,14 @@ from urllib.parse import parse_qs, urlparse
 
 class AuthError(Exception):
     """Login failed, was cancelled, or a token is missing/expired."""
+
+
+_cancel = threading.Event()
+
+
+def cancel_login() -> None:
+    """Make a `wait_for_redirect` that is currently waiting give up (and free its port)."""
+    _cancel.set()
 
 
 def new_state() -> str:
@@ -60,20 +69,25 @@ def wait_for_redirect(auth_url: str, port: int, path: str, state: str, timeout: 
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
-            self.wfile.write(b"<h3>Login received. You can close this tab and go back to the terminal.</h3>")
+            self.wfile.write(b"<h3>Login received. You can close this tab and go back to Autopost.</h3>")
             done.set()
 
         def log_message(self, *args):  # keep the terminal quiet
             pass
 
+    _cancel.clear()
     server = HTTPServer(("127.0.0.1", port), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
         print(f"Opening your browser to log in. If it doesn't open, visit:\n{auth_url}\n")
         open_in_browser(auth_url)
-        if not done.wait(timeout):
-            raise AuthError(f"No login response within {timeout}s")
+        deadline = time.monotonic() + timeout
+        while not done.wait(0.25):
+            if _cancel.is_set():
+                raise AuthError("Login cancelled")
+            if time.monotonic() > deadline:
+                raise AuthError(f"No login response within {timeout}s")
     finally:
         server.shutdown()
         server.server_close()

@@ -67,7 +67,7 @@ def test_followers_none_without_stats_scope(tmp_path):
 
 
 def test_scope_not_authorized_error(tmp_path):
-    r, _ = run(tmp_path, lambda *a, **k: R({"error": {"code": "scope_not_authorized", "message": "x"}}, 401), scope="")
+    r, _ = run(tmp_path, lambda *a, **k: R({"error": {"code": "scope_not_authorized", "message": "x"}}, 401), scope="video.list")
     assert r["status"] == "unavailable" and "video.list" in r["reason"]
 
 

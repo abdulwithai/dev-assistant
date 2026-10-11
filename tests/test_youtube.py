@@ -74,7 +74,9 @@ def test_login_builds_pkce_auth_url_and_saves_tokens(setup):
     q = {k: v[0] for k, v in parse_qs(parsed.query).items()}
     assert parsed.netloc == "accounts.google.com"
     assert q["client_id"] == "cid.apps.googleusercontent.com"
-    assert q["scope"] == "https://www.googleapis.com/auth/youtube.upload"
+    assert q["scope"].split() == ["https://www.googleapis.com/auth/youtube.upload",
+                                  "https://www.googleapis.com/auth/youtube.readonly",
+                                  "https://www.googleapis.com/auth/yt-analytics.readonly"]
     assert q["access_type"] == "offline" and q["prompt"] == "consent"
     assert q["response_type"] == "code"
     assert q["code_challenge_method"] == "S256"

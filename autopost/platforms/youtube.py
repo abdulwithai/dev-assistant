@@ -17,6 +17,9 @@ from autopost.platforms.base import Platform, PublishError
 from autopost.post import Post
 
 SCOPE = "https://www.googleapis.com/auth/youtube.upload"
+# The login also asks for read-only analytics so the dashboard can show views and audience.
+LOGIN_SCOPES = " ".join([SCOPE, "https://www.googleapis.com/auth/youtube.readonly",
+                         "https://www.googleapis.com/auth/yt-analytics.readonly"])
 TOKENINFO_URL = "https://oauth2.googleapis.com/tokeninfo"
 UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
 CHUNK_SIZE = 8 * 1024 * 1024  # must be a multiple of 256 KiB (except the last chunk)
@@ -59,7 +62,7 @@ class YouTube(Platform):
             "client_id": client["client_id"],
             "redirect_uri": self._redirect_uri(),
             "response_type": "code",
-            "scope": SCOPE,
+            "scope": LOGIN_SCOPES,
             "state": state,
             "code_challenge": challenge_b64url(verifier),
             "code_challenge_method": "S256",

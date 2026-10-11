@@ -106,7 +106,7 @@ def test_not_logged_in(env):
     cfg, store = env
     r = ay.fetch(cfg, store, date(2026, 10, 1), session=MagicMock())
     assert r["status"] == "unavailable" and "login" in r["reason"]
-    assert set(r) == {"platform", "status", "reason", "fetched_at", "posts", "daily", "audience", "followers"}
+    assert set(r) == {"platform", "status", "reason", "fetched_at", "posts", "daily", "audience", "followers", "scheduled"}
 
 
 def test_upload_only_scope_unavailable_without_api_calls(env):
@@ -184,3 +184,31 @@ def test_expired_token_refresh_failure_is_error(env):
     http.post.return_value = FakeResp(400, {"error": "invalid_grant"})
     r = ay.fetch(cfg, store, date(2026, 10, 1), session=http)
     assert r["status"] == "error" and "login" in r["reason"]
+
+
+def _scheduled_routes(publish_at):
+    routes = good_routes()
+    routes[("/playlistItems", None)] = FakeResp(body={"items": [{"contentDetails": {"videoId": "v3"}}]})
+    routes[("/videos", None)] = FakeResp(body={"items": [
+        {"id": "v3", "snippet": {"title": "Later", "thumbnails": {"medium": {"url": "https://i.ytimg.com/v3.jpg"}}},
+         "statistics": {}, "contentDetails": {"duration": "PT10M"},
+         "status": {"privacyStatus": "private", "publishAt": publish_at}}]})
+    return routes
+
+
+def test_future_publish_at_is_scheduled_not_a_post(env):
+    cfg, store = env
+    login(store, scope=" ".join(ay.ANALYTICS_SCOPES))
+    with patch.object(ay, "_now", return_value=datetime(2026, 10, 11, 12, 0, tzinfo=timezone.utc)):
+        r = ay.fetch(cfg, store, date(2026, 10, 1), session=router(_scheduled_routes("2026-10-20T09:00:00Z")))
+    assert r["posts"] == []
+    assert r["scheduled"] == [{"id": "v3", "title": "Later", "type": "Video", "scheduled_at": "2026-10-20T09:00:00Z",
+                               "url": "https://www.youtube.com/watch?v=v3", "thumbnail": "https://i.ytimg.com/v3.jpg"}]
+
+
+def test_past_publish_at_stays_published(env):
+    cfg, store = env
+    login(store, scope=" ".join(ay.ANALYTICS_SCOPES))
+    with patch.object(ay, "_now", return_value=datetime(2026, 10, 11, 12, 0, tzinfo=timezone.utc)):
+        r = ay.fetch(cfg, store, date(2026, 10, 1), session=router(_scheduled_routes("2026-10-05T09:00:00Z")))
+    assert [p["id"] for p in r["posts"]] == ["v3"] and r["scheduled"] == []

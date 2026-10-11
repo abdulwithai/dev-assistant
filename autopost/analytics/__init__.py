@@ -7,7 +7,7 @@ from typing import Dict, List, Optional
 
 from autopost.config import Config, TokenStore
 
-PLATFORMS = ["instagram", "youtube", "tiktok", "linkedin"]
+PLATFORMS = ["instagram", "youtube", "tiktok", "linkedin", "facebook"]
 SINCE_DAYS = 180          # history requested from fetchers (covers a 90-day range + its previous period)
 THUMB_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _STATUSES = ("ok", "unavailable", "error")
@@ -16,8 +16,9 @@ _STATUSES = ("ok", "unavailable", "error")
 # ---------------------------------------------------------------- cache
 
 def load_cache(config: Config) -> dict:
-    """{"synced_at": str|None, "platforms": {name: fetcher result}}; tolerant of missing/corrupt files."""
-    empty = {"synced_at": None, "platforms": {}}
+    """{"synced_at": str|None, "platforms": {name: fetcher result}, "manual_scheduled": {name: [items]}};
+    tolerant of missing/corrupt files."""
+    empty = {"synced_at": None, "platforms": {}, "manual_scheduled": {}}
     try:
         data = config.store.get_analytics()
     except (OSError, ValueError):
@@ -27,7 +28,10 @@ def load_cache(config: Config) -> dict:
     plats = data.get("platforms")
     clean = {k: v for k, v in (plats.items() if isinstance(plats, dict) else []) if isinstance(v, dict)}
     synced = data.get("synced_at")
-    return {"synced_at": synced if isinstance(synced, str) else None, "platforms": clean}
+    manual = data.get("manual_scheduled")
+    manual = {k: v for k, v in (manual.items() if isinstance(manual, dict) else []) if isinstance(v, list)}
+    return {"synced_at": synced if isinstance(synced, str) else None, "platforms": clean,
+            "manual_scheduled": manual}
 
 
 def _save_cache(config: Config, cache: dict) -> None:
@@ -39,7 +43,7 @@ def _save_cache(config: Config, cache: dict) -> None:
 def _blank(platform: str, status: str, reason: Optional[str]) -> dict:
     return {"platform": platform, "status": status, "reason": reason,
             "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "posts": [], "daily": [], "audience": None, "followers": None}
+            "posts": [], "daily": [], "audience": None, "followers": None, "scheduled": []}
 
 
 def _normalise(platform: str, result) -> dict:
@@ -50,7 +54,7 @@ def _normalise(platform: str, result) -> dict:
     out["platform"] = platform
     if out["status"] not in _STATUSES:
         out["status"], out["reason"] = "error", "Fetcher returned an invalid status"
-    for key in ("posts", "daily"):
+    for key in ("posts", "daily", "scheduled"):
         if not isinstance(out[key], list):
             out[key] = []
     return out
@@ -72,14 +76,15 @@ def sync_all(config: Config, store: TokenStore) -> Dict[str, str]:
     """Fetch every platform, cache the results, return {platform: status}. Never raises for a fetcher."""
     since = date.today() - timedelta(days=SINCE_DAYS)
     results = {name: _run_fetcher(name, config, store, since) for name in PLATFORMS}
-    previous = (load_cache(config).get("platforms") or {})
+    old_cache = load_cache(config)
+    previous = (old_cache.get("platforms") or {})
     for name, res in results.items():
         old = previous.get(name)
         if res.get("status") != "ok" and isinstance(old, dict) and old.get("status") == "ok":
             # A failed sync must not wipe the last good data: keep it and note why it is stale.
             results[name] = {**old, "reason": "Last sync failed (%s); showing earlier data" % (res.get("reason") or res.get("status"))}
     _save_cache(config, {"synced_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                         "platforms": results})
+                         "platforms": results, "manual_scheduled": old_cache["manual_scheduled"]})
     try:
         config.store.save_snapshots(results)
     except Exception:   # snapshots are optional; the cache above is the source of truth
@@ -91,6 +96,31 @@ def sync_all(config: Config, store: TokenStore) -> Dict[str, str]:
         except Exception:
             pass
     return {name: r["status"] for name, r in results.items()}
+
+
+def set_manual_scheduled(config: Config, platform: str, items) -> int:
+    """Replace the hand-entered scheduled posts of one platform (those scheduled inside the app itself);
+    returns how many were kept. An empty list clears them."""
+    if platform not in PLATFORMS:
+        raise ValueError("unknown platform %r" % (platform,))
+    kept = []
+    for it in items if isinstance(items, list) else []:
+        if not isinstance(it, dict) or not isinstance(it.get("title"), str) or not it["title"].strip():
+            continue
+        if _parse_dt(it.get("scheduled_at")) is None:
+            continue
+        item = {"title": it["title"].strip(), "scheduled_at": it["scheduled_at"].strip()}
+        for key in ("url", "type"):
+            if isinstance(it.get(key), str) and it[key].strip():
+                item[key] = it[key].strip()
+        kept.append(item)
+    cache = load_cache(config)
+    if kept:
+        cache["manual_scheduled"][platform] = kept
+    else:
+        cache["manual_scheduled"].pop(platform, None)
+    _save_cache(config, cache)
+    return len(kept)
 
 
 # ---------------------------------------------------------------- helpers
@@ -125,7 +155,9 @@ def _delta(cur, prev) -> Optional[float]:
 def _norm_url(u) -> str:
     if not isinstance(u, str):
         return ""
-    return u.split("?")[0].split("#")[0].rstrip("/").lower()
+    base, _, query = u.split("#")[0].partition("?")
+    video = re.search(r"(?:^|&)v=([\w-]+)", query)   # watch?v=ID: the id is the identity, keep it
+    return (base.rstrip("/") + ("?v=" + video.group(1) if video else "")).lower()
 
 
 def _eng_rate(row: dict) -> Optional[float]:
@@ -145,8 +177,7 @@ def _kind(item: dict) -> str:
 def _row(**kw) -> dict:
     base = {"id": "", "title": "", "type": "Video", "platform": "", "status": "published",
             "published_at": None, "scheduled_at": None, "thumbnail": None, "url": None, "error": None,
-            "views": None, "likes": None, "comments": None, "shares": None, "eng_rate": None,
-            "country_top": None}
+            "views": None, "likes": None, "comments": None, "shares": None, "eng_rate": None}
     base.update(kw)
     return base
 
@@ -272,6 +303,42 @@ def _best_times(rows: List[dict], platform: str) -> dict:
 
 # ---------------------------------------------------------------- dashboard
 
+def _account_name(config: Config) -> str:
+    """Display name from the saved logins (LinkedIn name, else Instagram handle); "You" if none."""
+    store = TokenStore(config.tokens_dir)
+    for platform, field in (("linkedin", "name"), ("instagram", "username")):
+        try:
+            value = (store.load(platform) or {}).get(field)
+        except Exception:
+            continue
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return "You"
+
+
+def _add_scheduled(rows: List[dict], cplat: dict, manual: dict) -> None:
+    """Add rows for posts scheduled inside the platforms' own apps: those a fetcher reported
+    (status ok only) and the hand-entered ones. Past times and titles already shown are skipped."""
+    now = datetime.now().astimezone()
+    for name in PLATFORMS:
+        res = cplat.get(name) or {}
+        found = (res.get("scheduled") or []) if res.get("status") == "ok" else []
+        for source in (found, manual.get(name) or []):
+            for i, item in enumerate(source):
+                if not isinstance(item, dict):
+                    continue
+                title = str(item.get("title") or "").strip()
+                when = _parse_dt(item.get("scheduled_at"))
+                if not title or when is None or when <= now:
+                    continue
+                if any(r["platform"] == name and r["title"].strip().lower() == title.lower() for r in rows):
+                    continue
+                rows.append(_row(id="sched:%s:%s" % (name, item.get("id") or i), title=title,
+                                 type=str(item.get("type") or "Post"), platform=name, status="scheduled",
+                                 scheduled_at=item.get("scheduled_at"), thumbnail=item.get("thumbnail"),
+                                 url=item.get("url")))
+
+
 def build_dashboard(config: Config, range_days: int = 30) -> dict:
     cache = load_cache(config)
     cplat = cache["platforms"]
@@ -304,6 +371,7 @@ def build_dashboard(config: Config, range_days: int = 30) -> dict:
                        url=item.get("url"), _local_id=item.get("id"), **metrics)
             all_rows.append(new)
             index.append(new)
+    _add_scheduled(all_rows, cplat, cache["manual_scheduled"])
     for r in all_rows:
         r["eng_rate"] = _eng_rate(r)
 
@@ -373,10 +441,7 @@ def build_dashboard(config: Config, range_days: int = 30) -> dict:
     n_pub = len(published)
     n_sched = sum(1 for r in rows if r["status"] in ("scheduled", "queued"))
     n_fail = sum(1 for r in rows if r["status"] == "failed")
-    name = "You"
-    ig = cplat.get("instagram") or {}
-    if isinstance(ig.get("account_name"), str) and ig["account_name"]:
-        name = ig["account_name"]
+    name = _account_name(config)
 
     for r in all_rows:
         r.pop("_local_id", None)

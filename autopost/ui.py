@@ -14,15 +14,19 @@ from pathlib import Path
 from typing import List, Optional
 from urllib.parse import parse_qs, urlsplit
 
+from autopost.accounts import LoginManager, statuses
 from autopost.config import Config, ConfigError, TokenStore
 from autopost.oauth import AuthError
 from autopost.platforms.base import PublishError
 from autopost.page import PAGE
 from autopost.sync import sync_instagram
-from autopost.analytics import THUMB_RE, build_dashboard, sync_all
+from autopost.analytics import THUMB_RE, build_dashboard, load_cache, sync_all
 from autopost.post import ALL_PLATFORMS, Post, PostError
 
 UI_PORT = 8766
+AUTO_SYNC_AFTER = 1800    # seconds: re-sync analytics when the cache is older than this
+AUTO_SYNC_CHECK = 300     # seconds between staleness checks
+_SYNC_LOCK = threading.Lock()
 CSP = ("default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
        "img-src 'self' data: https:; connect-src 'self'; base-uri 'none'; form-action 'none'")
 
@@ -167,7 +171,8 @@ def thumb_path(config: Config, thumb_id: str) -> Optional[Path]:
 
 
 def make_handler(config: Config, port: Optional[int] = None):
-    sync_lock = threading.Lock()
+    sync_lock = _SYNC_LOCK
+    logins = LoginManager(config, TokenStore(config.tokens_dir))
 
     class Handler(BaseHTTPRequestHandler):
         def _send(self, code: int, body: bytes, ctype: str = "application/json",
@@ -201,6 +206,9 @@ def make_handler(config: Config, port: Optional[int] = None):
                     if raw not in ("7", "30", "90"):
                         return self._json(400, {"ok": False, "error": "range must be 7, 30 or 90"})
                     self._json(200, build_dashboard(config, int(raw)))
+                elif path == "/api/accounts":
+                    self._json(200, {"ok": True, "accounts": statuses(config, TokenStore(config.tokens_dir)),
+                                     "login": logins.state()})
                 elif path.startswith("/thumb/") and path.endswith(".jpg"):
                     f = thumb_path(config, path[len("/thumb/"):-len(".jpg")])
                     if f is None:
@@ -216,10 +224,14 @@ def make_handler(config: Config, port: Optional[int] = None):
         def do_POST(self):
             # Only the dashboard itself may trigger a sync (blocks cross-site requests to localhost).
             origin, host = self.headers.get("Origin"), self.headers.get("Host", "")
-            if self.path not in ("/api/sync", "/api/analytics/sync"):
+            if self.path not in ("/api/sync", "/api/analytics/sync", "/api/accounts/login", "/api/accounts/cancel"):
                 return self._json(404, {"ok": False, "error": "not found"})
             if not self._host_ok() or origin != "http://" + host:
                 return self._json(403, {"ok": False, "error": "forbidden"})
+            if self.path == "/api/accounts/login":
+                return self._start_login()
+            if self.path == "/api/accounts/cancel":
+                return self._json(200, {"ok": True, "login": logins.cancel()})
             if not sync_lock.acquire(blocking=False):
                 return self._json(409, {"ok": False, "error": "A sync is already running."})
             try:
@@ -235,13 +247,50 @@ def make_handler(config: Config, port: Optional[int] = None):
             finally:
                 sync_lock.release()
 
+        def _start_login(self):
+            try:
+                size = int(self.headers.get("Content-Length") or 0)
+                body = json.loads(self.rfile.read(min(size, 4096)) or b"{}")
+                name = body.get("platform") if isinstance(body, dict) else None
+                self._json(200, {"ok": True, "login": logins.start(str(name))})
+            except KeyError:
+                self._json(400, {"ok": False, "error": "unknown platform"})
+            except RuntimeError as e:
+                self._json(409, {"ok": False, "error": str(e)})
+            except ValueError:
+                self._json(400, {"ok": False, "error": "invalid request"})
+
         def log_message(self, *args):
             pass
 
     return Handler
 
 
+def _cache_is_stale(config: Config) -> bool:
+    synced = load_cache(config).get("synced_at")
+    try:
+        at = datetime.fromisoformat(synced) if synced else None
+    except ValueError:
+        at = None
+    return at is None or (datetime.now(at.tzinfo) - at).total_seconds() > AUTO_SYNC_AFTER
+
+
+def auto_sync_loop(config: Config) -> None:
+    """Keep analytics fresh while the dashboard is running (never raises, skips if a sync is running)."""
+    while True:
+        try:
+            if _cache_is_stale(config) and _SYNC_LOCK.acquire(blocking=False):
+                try:
+                    sync_all(config, TokenStore(config.tokens_dir))
+                finally:
+                    _SYNC_LOCK.release()
+        except Exception:
+            pass
+        time.sleep(AUTO_SYNC_CHECK)
+
+
 def serve(config: Config, port: int = UI_PORT) -> None:
+    threading.Thread(target=auto_sync_loop, args=(config,), daemon=True).start()
     server = ThreadingHTTPServer(("127.0.0.1", port), make_handler(config, port))
     print(f"Dashboard: http://127.0.0.1:{port}  (Ctrl+C to stop)")
     try:
