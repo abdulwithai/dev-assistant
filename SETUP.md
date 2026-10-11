@@ -221,6 +221,49 @@ TikTok needs both pages at public URLs, and must be able to verify that you own 
 
 ---
 
+## Local database (Postgres in Docker via Colima)
+
+When `DATABASE_URL` is set in `.env`, all state the tool writes lives in Postgres: publish results (was `result.json`), imported Instagram posts (was `posts/imported.json`), the analytics cache (was `posts/analytics.json`) and analytics history (one snapshot per platform per sync). Without `DATABASE_URL` the tool falls back to those JSON files.
+
+Post metadata (the contents of `post.json`) is stored in the `posts` table too. The video file and the OAuth tokens in `tokens/` stay on disk.
+
+How posts work with the database:
+- Make a folder in `posts/inbox/` with the video and a `post.json`, then run `python -m autopost run-inbox` (or `post <folder>`). The first time a post is used, its `post.json` is registered in the database.
+- After that the **database wins**; editing `post.json` has no effect. To push an edit (or register a post without publishing): `python -m autopost add posts/inbox/<folder>`.
+- The dashboard never registers anything; it only reads.
+
+**First time switching an existing setup to the database** (copies the old JSON into Postgres; safe to re-run):
+
+```bash
+.venv/bin/python -m autopost migrate-to-db
+```
+
+Every time you come back to the project:
+
+```bash
+docker ps                      # if this errors with "Cannot connect to the Docker daemon", start Colima:
+colima start                   # then run docker ps again
+docker ps --filter name=autopost-db
+docker start autopost-db       # only if the container is listed as stopped (it has --restart unless-stopped)
+```
+
+One-time creation (already done on this machine; skip if `docker ps -a` shows `autopost-db`):
+
+```bash
+docker run -d --name autopost-db --restart unless-stopped \
+  -e POSTGRES_USER=autopost -e POSTGRES_PASSWORD=autopost_local -e POSTGRES_DB=autopost \
+  -p 127.0.0.1:5433:5432 -v autopost-pgdata:/var/lib/postgresql/data postgres:16
+.venv/bin/pip install -r requirements.txt
+```
+
+- Host port is **5433**, because a local Postgres already uses 5432 on this Mac.
+- `.env` needs `DATABASE_URL=postgresql://autopost:autopost_local@127.0.0.1:5433/autopost` (already in `.env.example`).
+- Tables (`post_results`, `imported`, `analytics_cache`, `analytics_snapshots`) are created automatically on first use (`autopost/store.py`).
+- Data lives in the Docker volume `autopost-pgdata`, so it survives `docker rm`. Don't run `docker volume rm autopost-pgdata` unless you want to wipe it.
+- Inspect: `docker exec -it autopost-db psql -U autopost -c "SELECT platform, fetched_at, followers FROM analytics_snapshots ORDER BY fetched_at DESC LIMIT 10;"`
+
+---
+
 ## After setup
 
 Run the one-time logins and a dry run, then see `README.md`:

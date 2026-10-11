@@ -36,6 +36,16 @@ class Config:
         self.tokens_dir = root / "tokens"
         self.inbox_dir = root / "posts" / "inbox"
         self.done_dir = root / "posts" / "done"
+        self.imported_file = root / "posts" / "imported.json"
+        self._store = None
+
+    @property
+    def store(self):
+        """Results/imported/analytics storage: Postgres when DATABASE_URL is set, else JSON files."""
+        if self._store is None:
+            from autopost.store import make_store
+            self._store = make_store(self)
+        return self._store
 
     def get(self, key: str, default: Optional[str] = None) -> Optional[str]:
         value = os.environ.get(key) or self.env.get(key)

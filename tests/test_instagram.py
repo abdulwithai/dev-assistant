@@ -384,3 +384,21 @@ def test_permalink_failure_does_not_fail_publish(tmp_path):
     with mock.patch("autopost.platforms.instagram.public_file_url", TunnelSpy()):
         result = ig.publish(make_post(tmp_path))
     assert result["id"] == "media-9" and result["url"] is None
+
+
+def test_list_media_pages_with_cursor_and_limit(tmp_path):
+    from unittest import mock
+    from autopost.config import Config, TokenStore
+    from autopost.platforms.instagram import Instagram
+    store = TokenStore(tmp_path)
+    store.save("instagram", {"access_token": "tok", "user_id": "1", "expires_at": 9999999999})
+    pages = [
+        {"data": [{"id": "a"}, {"id": "b"}], "paging": {"cursors": {"after": "c1"}, "next": "https://x?access_token=SECRET"}},
+        {"data": [{"id": "c"}], "paging": {"cursors": {"after": "c2"}}},
+    ]
+    http = mock.Mock()
+    http.get.side_effect = [mock.Mock(ok=True, json=lambda p=p: p) for p in pages]
+    ig = Instagram(Config(env={}, root=tmp_path), store, session=http)
+    assert [m["id"] for m in ig.list_media(10)] == ["a", "b", "c"]
+    assert http.get.call_args_list[1].kwargs["params"]["after"] == "c1"
+    assert "SECRET" not in str(http.get.call_args_list)

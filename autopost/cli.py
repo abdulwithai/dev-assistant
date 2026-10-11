@@ -4,6 +4,10 @@
   status                      check saved logins on every platform (read-only)
   post <folder> [--only ...]  publish one post folder
   run-inbox                   publish every folder in posts/inbox, move finished ones to posts/done
+  sync instagram [--limit N]  fetch your existing Instagram posts for the dashboard (read-only)
+  add <folder> [<folder> ...] register posts (or push post.json edits) into the Postgres database (needs DATABASE_URL)
+  migrate-to-db               copy post.json / result.json / imported.json / analytics.json into the Postgres database (needs DATABASE_URL)
+  ui [--port N] [--reload]    local dashboard of queued and published posts (http://127.0.0.1:8766); --reload restarts on code changes
 Add --dry-run to post/run-inbox to validate everything without uploading.
 """
 import argparse
@@ -18,6 +22,7 @@ from autopost.oauth import AuthError
 from autopost.platforms import REGISTRY, get_platform_class
 from autopost.platforms.base import PublishError
 from autopost.post import Post, PostError
+from autopost.store import JsonStore, make_store
 
 
 def _make(name: str, config: Config, store: TokenStore):
@@ -77,7 +82,7 @@ def publish_post(post: Post, config: Config, store: TokenStore, only: Optional[L
 
 def cmd_post(args, config: Config, store: TokenStore) -> int:
     try:
-        post = Post(Path(args.folder))
+        post = Post(Path(args.folder), config.store)
     except PostError as e:
         print(f"FAIL {e}")
         return 1
@@ -94,7 +99,7 @@ def cmd_run_inbox(args, config: Config, store: TokenStore) -> int:
     failed = 0
     for folder in folders:
         try:
-            post = Post(folder)
+            post = Post(folder, config.store)
         except PostError as e:
             failed += 1
             print(f"== {folder.name}: FAIL {e}")
@@ -107,6 +112,108 @@ def cmd_run_inbox(args, config: Config, store: TokenStore) -> int:
         elif not finished:
             failed += 1
     return 1 if failed and not args.dry_run else 0
+
+
+def cmd_add(args, config: Config, store: TokenStore) -> int:
+    target = config.store
+    if isinstance(target, JsonStore):
+        print("FAIL DATABASE_URL is not set (post.json is already the source)")
+        return 1
+    failed = 0
+    for name in args.folders:
+        try:
+            post = Post(Path(name), target, register=False, use_store_meta=False)
+            target.set_post(post.folder, post.meta)
+        except PostError as e:
+            failed += 1
+            print(f"FAIL {e}")
+            continue
+        print(f"added {name}")
+    return 1 if failed else 0
+
+
+def cmd_sync(args, config: Config, store: TokenStore) -> int:
+    from autopost.sync import sync_instagram
+    try:
+        count = sync_instagram(config, store, args.limit)
+    except (AuthError, ConfigError, PublishError) as e:
+        print(f"FAIL {e}")
+        return 1
+    print(f"instagram  fetched {count} posts")
+    return 0
+
+
+def cmd_migrate_to_db(args, config: Config, store: TokenStore) -> int:
+    if not config.get("DATABASE_URL"):
+        print("FAIL DATABASE_URL is not set")
+        return 1
+    source = JsonStore(config.imported_file, config.root / "posts" / "analytics.json")
+    target = make_store(config)
+    results = platforms = posts = 0
+    for directory in (config.inbox_dir, config.done_dir):
+        folders = sorted(p for p in directory.iterdir() if p.is_dir()) if directory.is_dir() else []
+        for folder in folders:
+            if not (folder / "result.json").exists():
+                continue
+            try:
+                data = source.get_results(folder)
+                if not isinstance(data, dict):
+                    raise ValueError("not an object")
+                entries = [(n, e) for n, e in data.items() if isinstance(e, dict)]
+                for name, entry in entries:
+                    target.set_result(folder, name, entry)
+            except Exception as e:
+                print(f"WARN skipped {folder.name}/result.json: {e}")
+                continue
+            results += 1
+            platforms += len(entries)
+    for directory in (config.inbox_dir, config.done_dir):
+        folders = sorted(p for p in directory.iterdir() if p.is_dir()) if directory.is_dir() else []
+        for folder in folders:
+            if not (folder / "post.json").exists():
+                continue
+            try:
+                post = Post(folder, source, register=False)
+                target.set_post(folder, post.meta)
+            except Exception as e:
+                print(f"WARN skipped {folder.name}/post.json: {e}")
+                continue
+            posts += 1
+    print(f"posts      {posts} folders")
+    print(f"results    {results} folders, {platforms} platform entries")
+    imported = 0
+    try:
+        data = source.get_imported()
+        if not isinstance(data, dict):
+            raise ValueError("not an object")
+        for name, section in data.items():
+            if isinstance(section, dict):
+                target.set_imported(name, section)
+                imported += 1
+    except Exception as e:
+        print(f"WARN skipped imported.json: {e}")
+    print(f"imported   {imported} sections")
+    try:
+        cache = source.get_analytics()
+        if cache is None:
+            print("analytics  none")
+        elif not isinstance(cache, dict):
+            raise ValueError("not an object")
+        else:
+            target.set_analytics(cache)
+            print("analytics  1 cache")
+    except Exception as e:
+        print(f"WARN skipped analytics.json: {e}")
+    return 0
+
+
+def cmd_ui(args, config: Config, store: TokenStore) -> int:
+    from autopost.ui import serve, serve_reload
+    if args.reload:
+        serve_reload(args.port)
+    else:
+        serve(config, args.port)
+    return 0
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -122,11 +229,21 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--dry-run", action="store_true")
     p = sub.add_parser("run-inbox")
     p.add_argument("--dry-run", action="store_true")
+    p = sub.add_parser("sync")
+    p.add_argument("platform", choices=["instagram"])
+    p.add_argument("--limit", type=int, default=100)
+    p = sub.add_parser("add")
+    p.add_argument("folders", nargs="+", metavar="folder")
+    sub.add_parser("migrate-to-db")
+    p = sub.add_parser("ui")
+    p.add_argument("--port", type=int, default=8766)
+    p.add_argument("--reload", action="store_true", help="restart the dashboard when the code changes (development)")
     args = parser.parse_args(argv)
 
     config = Config()
     store = TokenStore(config.tokens_dir)
-    handler = {"login": cmd_login, "status": cmd_status, "post": cmd_post, "run-inbox": cmd_run_inbox}[args.command]
+    handler = {"login": cmd_login, "status": cmd_status, "post": cmd_post, "run-inbox": cmd_run_inbox, "sync": cmd_sync, "add": cmd_add,
+               "migrate-to-db": cmd_migrate_to_db, "ui": cmd_ui}[args.command]
     return handler(args, config, store)
 
 

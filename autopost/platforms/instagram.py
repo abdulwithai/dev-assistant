@@ -176,6 +176,32 @@ class Instagram(Platform):
         kind = me.get("account_type")
         return "@%s (%s)" % (username, kind) if kind else "@%s" % username
 
+    def list_media(self, limit: int = 100) -> list:
+        """Read-only: the account's most recent posts, newest first (at most `limit`).
+
+        Pages with the `after` cursor so the token never travels in a URL."""
+        token = self._credentials()["access_token"]
+        items: list = []
+        after = None
+        while len(items) < limit:
+            params = {"fields": "id,caption,media_type,media_product_type,permalink,timestamp",
+                      "limit": min(50, limit - len(items))}
+            if after:
+                params["after"] = after
+            try:
+                resp = self.http.get(self._url("me/media"), params=params,
+                                     headers=self._headers(token), timeout=self.HTTP_TIMEOUT)
+            except requests.RequestException as e:
+                raise PublishError("Could not reach Instagram (%s)" % type(e).__name__)
+            data = self._json(resp)
+            if not resp.ok or "error" in data:
+                raise PublishError("Listing Instagram posts failed: %s" % self._error_text(resp))
+            items.extend(data.get("data") or [])
+            after = ((data.get("paging") or {}).get("cursors") or {}).get("after")
+            if not after or not (data.get("paging") or {}).get("next") or not data.get("data"):
+                break
+        return items[:limit]
+
     def publish(self, post: Post, dry_run: bool = False) -> dict:
         caption = post.caption_for(self.name)
         if len(caption) > MAX_CAPTION:

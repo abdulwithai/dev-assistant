@@ -2,3 +2,4 @@ requests>=2.31,<3
 # macOS system Python uses LibreSSL; urllib3 2.x only warns about it, 1.26 is quiet
 urllib3<2
 pytest>=8
+psycopg[binary]>=3.1

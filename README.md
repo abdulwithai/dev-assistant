@@ -52,7 +52,7 @@ It runs locally on your Mac and is free.
 Create one folder per post under `posts/inbox/`, for example `posts/inbox/2026-10-12-ai-news/`. Each folder contains:
 
 - exactly one video (`.mp4` or `.mov`, vertical 9:16, under 90 seconds for all platforms)
-- a `post.json`
+- a `post.json`. With `DATABASE_URL` set, it is copied into the database the first time the post is used; after that the database wins. To push later edits run `python -m autopost add posts/inbox/<folder>`.
 
 Example `post.json`:
 
@@ -91,7 +91,7 @@ Commands:
 .venv/bin/python -m autopost post posts/inbox/2026-10-12-ai-news --only youtube,linkedin
 ```
 
-Results are written to `result.json` inside each folder. A re-run only retries the platforms that failed. When all platforms succeed, the folder moves to `posts/done/`.
+Results are stored in Postgres when `DATABASE_URL` is set (see SETUP.md, "Local database"), otherwise in `result.json` inside each folder. A re-run only retries the platforms that failed. When all platforms succeed, the folder moves to `posts/done/`.
 
 ## Good to know
 

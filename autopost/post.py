@@ -23,15 +23,22 @@ class PostError(Exception):
 
 
 class Post:
-    def __init__(self, folder: Path):
+    def __init__(self, folder: Path, store=None, register: bool = True, use_store_meta: bool = True):
+        from autopost.store import JsonStore
         self.folder = Path(folder)
-        meta_file = self.folder / "post.json"
-        if not meta_file.exists():
-            raise PostError(f"{meta_file} not found")
-        try:
-            self.meta = json.loads(meta_file.read_text())
-        except json.JSONDecodeError as e:
-            raise PostError(f"{meta_file} is not valid JSON: {e}")
+        self.store = store if store is not None else JsonStore()
+        stored = self.store.get_post(self.folder) if use_store_meta else None
+        from_file = stored is None
+        if from_file:
+            meta_file = self.folder / "post.json"
+            if not meta_file.exists():
+                raise PostError(f"{meta_file} not found")
+            try:
+                self.meta = json.loads(meta_file.read_text())
+            except json.JSONDecodeError as e:
+                raise PostError(f"{meta_file} is not valid JSON: {e}")
+        else:
+            self.meta = stored
         videos = sorted(p for p in self.folder.iterdir() if p.suffix.lower() in VIDEO_EXTENSIONS)
         if len(videos) != 1:
             raise PostError(f"{self.folder} must contain exactly one video ({', '.join(VIDEO_EXTENSIONS)}), found {len(videos)}")
@@ -41,6 +48,8 @@ class Post:
         unknown = set(self.platforms) - set(ALL_PLATFORMS)
         if unknown:
             raise PostError(f"Unknown platforms in post.json: {', '.join(sorted(unknown))}")
+        if from_file and register:
+            self.store.set_post(self.folder, self.meta)
 
     @property
     def platforms(self) -> List[str]:
@@ -73,20 +82,18 @@ class Post:
         return self.folder / "result.json"
 
     def results(self) -> Dict[str, dict]:
-        return json.loads(self.result_file.read_text()) if self.result_file.exists() else {}
+        return self.store.get_results(self.folder)
 
     def succeeded(self, platform: str) -> bool:
         return self.results().get(platform, {}).get("status") == "ok"
 
     def record(self, platform: str, status: str, info: Optional[dict] = None, error: Optional[str] = None) -> None:
-        data = self.results()
         entry = {"status": status, "at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
         if info:
             entry.update(info)
         if error:
             entry["error"] = error
-        data[platform] = entry
-        self.result_file.write_text(json.dumps(data, indent=2))
+        self.store.set_result(self.folder, platform, entry)
 
     def pending(self) -> List[str]:
         return [p for p in self.platforms if not self.succeeded(p)]
